@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#62a0ea"/>
+      <stop offset="1" stop-color="#1c71d8"/>
+    </linearGradient>
+    <linearGradient id="bin" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#deddda"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="12" width="112" height="104" rx="18" fill="url(#bg)"/>
+  <rect x="8" y="12" width="112" height="22" rx="18" fill="#000" opacity="0.15"/>
+  <circle cx="24" cy="23" r="4" fill="#fff" opacity="0.8"/>
+  <circle cx="37" cy="23" r="4" fill="#fff" opacity="0.8"/>
+  <!-- package box being lifted out -->
+  <g transform="rotate(-14 52 52)">
+    <rect x="36" y="38" width="32" height="26" rx="4" fill="#f6d32d"/>
+    <rect x="36" y="38" width="32" height="8" rx="3" fill="#e5a50a"/>
+    <rect x="49" y="38" width="6" height="26" fill="#e5a50a" opacity="0.7"/>
+  </g>
+  <!-- trash bin -->
+  <rect x="58" y="58" width="44" height="8" rx="3" fill="url(#bin)"/>
+  <rect x="73" y="52" width="14" height="7" rx="2" fill="url(#bin)"/>
+  <path d="M62 68 h36 l-4 38 a5 5 0 0 1 -5 4 h-18 a5 5 0 0 1 -5 -4 z" fill="url(#bin)"/>
+  <rect x="70" y="74" width="4" height="28" rx="2" fill="#1c71d8" opacity="0.45"/>
+  <rect x="78" y="74" width="4" height="28" rx="2" fill="#1c71d8" opacity="0.45"/>
+  <rect x="86" y="74" width="4" height="28" rx="2" fill="#1c71d8" opacity="0.45"/>
+</svg>
