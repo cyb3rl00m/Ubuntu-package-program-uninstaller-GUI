@@ -9,6 +9,8 @@ PC (APT, Snap and Flatpak) in one searchable list, and removes the app *and* eve
 
 Made for **Ubuntu 26.04 LTS**. Built with GTK 4 + libadwaita.
 
+![Uninstaller](uninstaller.png)
+
 ## What it does
 
 | Feature | Details |
