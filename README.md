@@ -9,6 +9,8 @@ PC (APT or DNF, Snap and Flatpak) in one searchable list, and removes the app *a
 
 Works on **Ubuntu 26.04 LTS** and **Fedora** (Workstation, KDE and other spins). Built with GTK 4 + libadwaita.
 
+![Uninstaller](uninstaller.png)
+
 ## What it does
 
 | Feature | Details |
@@ -35,14 +37,17 @@ Works on **Ubuntu 26.04 LTS** and **Fedora** (Workstation, KDE and other spins).
 
 1. Download the latest zip from the [Releases page](https://github.com/cyb3rl00m/uninstaller/releases) and unzip it
    (or `git clone https://github.com/cyb3rl00m/uninstaller`).
-2. Open a terminal in the folder and run:
+2. Open a terminal in the unzipped folder and run:
 
 ```bash
-./install.sh
+bash install.sh
 ```
 
-It installs anything missing with `apt` on Ubuntu or `dnf` on Fedora. Then open **Uninstaller** from the app grid. Run `./install.sh` again to update, or
-`./install.sh --uninstall` to remove it.
+The same command works on **Ubuntu and Fedora**: it detects your system and installs anything missing
+with `apt` or `dnf`. Then open **Uninstaller** from the app grid.
+
+- **Update:** download the new zip and run `bash install.sh` again. It replaces the old version.
+- **Remove:** `bash install.sh --uninstall`
 
 ## Fedora notes
 
