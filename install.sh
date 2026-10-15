@@ -24,6 +24,7 @@ if [[ $EUID -eq 0 ]]; then
 fi
 
 if command -v apt-get >/dev/null; then
+    # Ubuntu / Debian / Mint
     deps=(python3 python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 pkexec)
     missing=()
     for p in "${deps[@]}"; do
@@ -34,8 +35,24 @@ if command -v apt-get >/dev/null; then
         sudo apt-get update -qq
         sudo apt-get install -y "${missing[@]}"
     fi
+elif command -v rpm >/dev/null; then
+    # Fedora (Workstation, KDE, other spins) and Fedora Atomic
+    deps=(python3 python3-gobject gtk4 libadwaita polkit)
+    missing=()
+    for p in "${deps[@]}"; do
+        rpm -q "$p" &>/dev/null || missing+=("$p")
+    done
+    if ((${#missing[@]})); then
+        if [[ -e /run/ostree-booted ]]; then
+            echo "Missing packages: ${missing[*]}"
+            echo "On Fedora Atomic install them with: rpm-ostree install ${missing[*]}  (then reboot)"
+            exit 1
+        fi
+        echo "Installing required packages: ${missing[*]}"
+        sudo dnf install -y "${missing[@]}"
+    fi
 else
-    echo "Uninstaller is made for Ubuntu/Debian (it removes APT packages). Snap and Flatpak lists may still work."
+    echo "Unknown system: make sure Python 3, PyGObject, GTK 4, libadwaita and pkexec are installed."
 fi
 
 install -Dm755 "$SRC/uninstaller.py" "$BIN_DIR/uninstaller"
@@ -46,12 +63,12 @@ cat > "$APPS_DIR/$APP_ID.desktop" <<EOF
 Type=Application
 Name=Uninstaller
 GenericName=Remove Software
-Comment=Completely remove apps and packages (APT, Snap, Flatpak)
+Comment=Completely remove apps and packages (APT/DNF, Snap, Flatpak)
 Exec=$BIN_DIR/uninstaller
 Icon=$APP_ID
 Terminal=false
 Categories=System;Settings;PackageManager;GTK;
-Keywords=uninstall;remove;delete;package;apt;snap;flatpak;purge;cleanup;
+Keywords=uninstall;remove;delete;package;apt;dnf;rpm;snap;flatpak;purge;cleanup;
 StartupNotify=true
 EOF
 

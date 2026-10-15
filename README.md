@@ -1,35 +1,34 @@
 # Uninstaller
 
-**Remove apps from Ubuntu completely: the program, its settings, and the leftovers in your home folder.**
+**Remove apps from Ubuntu and Fedora completely: the program, its settings, and the leftovers in your home folder.**
 
-When you uninstall something on Ubuntu, a lot stays behind: config files in `/etc`, dependencies
+When you uninstall something on Linux, a lot stays behind: config files in `/etc`, dependencies
 nothing uses anymore, and folders like `~/.config/<app>` and `~/.cache/<app>`. Reinstall the app
 and it comes back with the same broken settings. Uninstaller shows everything installed on your
-PC (APT, Snap and Flatpak) in one searchable list, and removes the app *and* everything it left.
+PC (APT or DNF, Snap and Flatpak) in one searchable list, and removes the app *and* everything it left.
 
-Made for **Ubuntu 26.04 LTS**. Built with GTK 4 + libadwaita.
-
-![Uninstaller](uninstaller.png)
+Works on **Ubuntu 26.04 LTS** and **Fedora** (Workstation, KDE and other spins). Built with GTK 4 + libadwaita.
 
 ## What it does
 
 | Feature | Details |
 |---|---|
-| **One list for everything** | APT packages, Snaps and Flatpaks together, with icons, versions and sizes |
+| **One list for everything** | APT packages (Ubuntu) or RPM packages (Fedora), Snaps and Flatpaks together, with icons, versions and sizes |
 | **Search** | Just start typing anywhere (or Ctrl+F). Searches names and descriptions |
-| **Complete removal** | APT: `apt-get purge --autoremove` · Snap: `snap remove --purge` · Flatpak: `flatpak uninstall --delete-data` + unused runtimes |
-| **Home folder cleanup** | Finds the app's folders in `~/.config`, `~/.local/share`, `~/.local/state`, `~/.cache`, `~/.<app>` and `~/snap/<app>`, and lets you choose which to delete |
-| **Leftover configs** | Lists packages that were removed earlier but left config files behind, with a **Purge** button |
+| **Complete removal** | APT: `apt-get purge --autoremove` · DNF: `dnf remove` (unused dependencies included) + leftover `.rpmsave` config files · Snap: `snap remove --purge` · Flatpak: `flatpak uninstall --delete-data` + unused runtimes |
+| **Home folder cleanup** | Finds the app's folders in `~/.config`, `~/.local/share`, `~/.local/state`, `~/.cache`, `~/.<app>` and `~/snap/<app>`, and lets you choose which to move to the Trash |
+| **Leftover configs** | Ubuntu: lists packages that were removed earlier but left config files behind, with a **Purge** button |
 | **Filters** | Apps only or all packages, by source, hide dependencies, sort by name or size |
 
 ## Safety first
 
-- **Preview before removing:** for APT packages it does a dry run and shows *every* package that
+- **Preview before removing:** for APT and DNF packages it does a dry run and shows *every* package that
   will be removed, so you never take half the desktop with you by accident.
-- **Core packages are protected:** essential packages, `ubuntu-desktop`, `gdm3`, `snapd`, snap bases
-  and similar get a red warning and need an extra "I understand" tick.
+- **Core packages are protected:** essential packages, `ubuntu-desktop`, `gdm3`, `snapd`, snap bases,
+  Fedora's protected packages (`dnf`, `systemd`, `sudo`, the kernel…) and similar get a red warning
+  and need an extra "I understand" tick. dnf itself also refuses to remove its protected packages.
 - **Personal folders go to the Trash**, not straight into oblivion. Wrong folder? Restore it.
-- **Your password is asked for each action** through the normal Ubuntu prompt. Nothing runs as root
+- **Your password is asked for each action** through the normal system prompt. Nothing runs as root
   in the background.
 
 ## Install
@@ -42,8 +41,18 @@ Made for **Ubuntu 26.04 LTS**. Built with GTK 4 + libadwaita.
 ./install.sh
 ```
 
-Then open **Uninstaller** from the app grid. Run `./install.sh` again to update, or
+It installs anything missing with `apt` on Ubuntu or `dnf` on Fedora. Then open **Uninstaller** from the app grid. Run `./install.sh` again to update, or
 `./install.sh --uninstall` to remove it.
+
+## Fedora notes
+
+- **You may be asked for your password twice:** dnf needs admin rights even for the dry run, so it
+  asks once for the preview and once for the actual removal.
+- **"Dependency" labels** come from `dnf repoquery --userinstalled`. If dnf can't tell, every package is
+  treated as installed by you and nothing is hidden by "Hide dependencies".
+- **Fedora Atomic** (Silverblue, Kinoite, Bazzite…): the base system is read-only and managed with
+  `rpm-ostree`, so only Flatpaks (and Snaps) are listed. Remove layered packages with
+  `rpm-ostree uninstall`.
 
 ## Known limits
 
@@ -58,7 +67,7 @@ Bug reports and ideas are very welcome:
 
 - **Missed leftovers:** an app left a folder the cleanup didn't find? [Open an issue](https://github.com/cyb3rl00m/uninstaller/issues/new) with the app and folder name.
 - **Wrong matches:** a folder offered for deletion that doesn't belong to the app? Please report it.
-- **Testing on other systems:** Kubuntu, Debian, Mint, Pop!_OS…
+- **Testing on other systems:** Fedora KDE, Nobara, Kubuntu, Debian, Mint, Pop!_OS…
 
 ## About this project
 

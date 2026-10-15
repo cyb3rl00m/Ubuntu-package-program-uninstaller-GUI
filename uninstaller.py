@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""Uninstaller — list and completely remove APT, Snap and Flatpak software on Ubuntu.
+"""Uninstaller — list and completely remove APT/DNF, Snap and Flatpak software (Ubuntu and Fedora).
 
 GTK 4 + libadwaita.  https://github.com/cyb3rl00m/uninstaller
 """
 import glob
 import os
 import re
+import shlex
 import subprocess
 import sys
 import threading
 from dataclasses import dataclass, field
 
 APP_ID = "io.github.cyb3rl00m.Uninstaller"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 REPO = "https://github.com/cyb3rl00m/uninstaller"
 
 if "--version" in sys.argv:
@@ -54,15 +55,15 @@ DESKTOP_DIRS = [
 
 @dataclass
 class Package:
-    source: str                 # "apt" | "snap" | "flatpak"
-    name: str                   # apt package / snap name / flatpak app id
+    source: str                 # "apt" | "dnf" | "snap" | "flatpak"
+    name: str                   # apt/rpm package / snap name / flatpak app id
     version: str = ""
     summary: str = ""
     size_bytes: int = 0
     display_name: str = ""
     desktop_files: list = field(default_factory=list)
     is_app: bool = False        # has a visible launcher in the app grid
-    manual: bool = True         # apt: installed by you (not pulled in as a dependency)
+    manual: bool = True         # apt/dnf: installed by you (not pulled in as a dependency)
     system: bool = False        # essential / required / snap base -> extra warning
     residual: bool = False      # apt: removed, but config files still on disk
     installation: str = ""      # flatpak: "user" / "system" / custom
@@ -208,6 +209,171 @@ def simulate_apt_purge(name):
     return removed, ""
 
 
+# --------------------------------------------------------------------------- DNF / RPM (Fedora)
+
+# Fedora packages whose removal breaks the desktop or the package manager itself
+FEDORA_CRITICAL = {
+    "fedora-release", "fedora-release-common", "fedora-release-workstation", "fedora-release-kde",
+    "fedora-release-identity-basic", "fedora-release-identity-workstation", "fedora-release-identity-kde",
+    "gnome-shell", "gdm", "sddm", "plasma-workspace", "dnf", "dnf5", "rpm", "libdnf5", "python3-dnf",
+    "systemd", "sudo", "polkit", "glibc", "bash", "coreutils", "NetworkManager", "kernel",
+    "kernel-core", "grub2-common", "shim-x64", "dracut", "selinux-policy", "selinux-policy-targeted",
+}
+RPM_ARCHES = {"x86_64", "noarch", "i686", "i386", "aarch64", "ppc64le", "s390x", "armv7hl", "src"}
+
+
+def is_ostree():
+    """Fedora Atomic (Silverblue, Kinoite…): the base system is read-only, dnf can't remove from it."""
+    return os.path.exists("/run/ostree-booted")
+
+
+def _dnf_protected():
+    names = set()
+    for f in glob.glob("/etc/dnf/protected.d/*.conf"):
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                names |= {ln.strip() for ln in fh if ln.strip() and not ln.startswith("#")}
+        except OSError:
+            pass
+    return names
+
+
+def _dnf_userinstalled():
+    """Names of packages you installed yourself, or None if dnf can't tell us."""
+    rc, out, _ = _run(["dnf", "-q", "repoquery", "--userinstalled", "--disablerepo=*",
+                       "--queryformat", "%{name}\n"])
+    names = set(out.split()) if rc == 0 else set()
+    return names or None
+
+
+def _rpm_desktop_map():
+    """desktop-file path -> owning rpm package name."""
+    files = [f for f in glob.glob("/usr/share/applications/*.desktop")
+             + glob.glob("/usr/local/share/applications/*.desktop")]
+    if not files:
+        return {}
+    rc, out, _ = _run(["rpm", "-qf", "--qf", "[%{FILENAMES}\t%{=NAME}\n]", *files])
+    wanted, owner = set(files), {}
+    for line in out.splitlines():
+        path, _, name = line.partition("\t")
+        if name and path in wanted:
+            owner.setdefault(name, []).append(path)
+    return owner
+
+
+def list_dnf():
+    if is_ostree():
+        return []
+    fmt = "%{NAME}\t%|EPOCH?{%{EPOCH}:}:{}|%{VERSION}-%{RELEASE}\t%{ARCH}\t%{SIZE}\t%{SUMMARY}\n"
+    rc, out, _ = _run(["rpm", "-qa", "--qf", fmt])
+    if rc != 0:
+        return []
+    rows = [ln.split("\t") for ln in out.splitlines()]
+    rows = [r for r in rows if len(r) >= 5 and r[0] != "gpg-pubkey"]
+    counts = {}
+    for r in rows:
+        counts[r[0]] = counts.get(r[0], 0) + 1
+    manual = _dnf_userinstalled()
+    protected = _dnf_protected()
+    desktop = _rpm_desktop_map()
+
+    pkgs = []
+    for name, ver, arch, size, summary in (r[:5] for r in rows):
+        # several versions/arches of one name (kernels, i686 libs): address each one exactly
+        ident = name if counts[name] == 1 else f"{name}-{ver.split(':')[-1]}.{arch}"
+        p = Package(
+            source="dnf", name=ident, version=ver, summary=summary,
+            size_bytes=int(size) if size.isdigit() else 0,
+            manual=True if manual is None else name in manual,
+            system=name in protected or name in FEDORA_CRITICAL,
+        )
+        if ident != name:
+            p.display_name = name
+        _attach_desktop(p, sorted(desktop.get(name, [])))
+        pkgs.append(p)
+    return pkgs
+
+
+def parse_dnf_transaction(out):
+    """Package names from the 'Removing…' sections of dnf4/dnf5 transaction output."""
+    removed, in_section = [], False
+    for line in out.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.lower().startswith("transaction summary"):
+            break
+        if s.endswith(":"):                 # section header: "Removing:", "Removing unused dependencies:"…
+            in_section = s.startswith("Removing")
+            continue
+        if not in_section or set(s) <= set("=- "):
+            continue
+        first = s.split()[0]
+        if first in RPM_ARCHES or first == "replacing" or not re.fullmatch(r"[\w.+-]+", first):
+            continue                        # continuation of a wrapped line / not a package row
+        removed.append(first)
+    return list(dict.fromkeys(removed))
+
+
+def simulate_dnf_remove(name, use_pkexec=False):
+    """Dry-run. Returns (packages, error_text, cancelled).
+
+    dnf refuses to resolve a removal without admin rights, so if the unprivileged
+    try is refused this is repeated through pkexec (one password prompt)."""
+    cmd = ["dnf", "remove", "--assumeno", name]
+    rc, out, err = _run((["pkexec"] if use_pkexec else []) + cmd)
+    text = out + "\n" + err
+    if use_pkexec and rc in (126, 127):
+        return [], "", True
+    removed = parse_dnf_transaction(text)
+    if removed:
+        return removed, "", False
+    if not use_pkexec and re.search(r"superuser privileges", text, re.I):
+        return simulate_dnf_remove(name, use_pkexec=True)
+    lines = [ln for ln in text.strip().splitlines() if "Operation aborted" not in ln]
+    return [], "\n".join(lines[-15:]) or "dnf could not work out what to remove.", False
+
+
+def rpm_config_files(names):
+    """Config files owned by these packages (to clean up *.rpmsave copies after removal)."""
+    rc, out, _ = _run(["rpm", "-qc", *names])
+    return sorted({ln for ln in out.splitlines() if ln.startswith("/")})
+
+
+# --------------------------------------------------------------------------- distro
+
+def _os_release():
+    data = {}
+    try:
+        with open("/etc/os-release", encoding="utf-8") as f:
+            for line in f:
+                k, _, v = line.strip().partition("=")
+                data[k] = v.strip('"')
+    except OSError:
+        pass
+    return data
+
+
+def detect_native():
+    """'apt' on Ubuntu/Debian, 'dnf' on Fedora/RHEL family, else whatever tool exists."""
+    rel = _os_release()
+    ids = (rel.get("ID", "") + " " + rel.get("ID_LIKE", "")).split()
+    if any(i in ("fedora", "rhel", "centos") for i in ids):
+        return "dnf"
+    if any(i in ("debian", "ubuntu") for i in ids):
+        return "apt"
+    if subprocess.run(["sh", "-c", "command -v dpkg-query"], capture_output=True).returncode == 0:
+        return "apt"
+    if subprocess.run(["sh", "-c", "command -v rpm"], capture_output=True).returncode == 0:
+        return "dnf"
+    return None
+
+
+NATIVE = detect_native()
+NATIVE_LABEL = {"apt": "APT", "dnf": "DNF"}.get(NATIVE, "")
+DISTRO_NAME = _os_release().get("NAME", "your system")
+
+
 # --------------------------------------------------------------------------- Snap
 
 SNAP_SYSTEM_NOTES = ("base", "core", "snapd", "gadget", "kernel")
@@ -266,7 +432,8 @@ def list_flatpak():
 
 def load_all():
     pkgs = []
-    for fn in (list_apt, list_snap, list_flatpak):
+    native = {"apt": [list_apt], "dnf": [list_dnf]}.get(NATIVE, [])
+    for fn in (*native, list_snap, list_flatpak):
         try:
             pkgs.extend(fn())
         except Exception as e:          # one broken source must not kill the list
@@ -306,12 +473,10 @@ def user_data_paths(pkg):
                 found.append(os.path.join(HOME, entry))
     except OSError:
         pass
-    extra = []
-    if pkg.source == "snap":
-        extra.append(os.path.join(HOME, "snap", pkg.name))
-    if pkg.source == "flatpak":
-        extra.append(os.path.join(HOME, ".var/app", pkg.name))
-    found.extend(p for p in extra if os.path.exists(p))
+    snap_home = os.path.join(HOME, "snap", pkg.name)
+    if pkg.source == "snap" and os.path.exists(snap_home):
+        found.append(snap_home)
+    # Flatpak's ~/.var/app/<id> is already deleted by `flatpak uninstall --delete-data`
     return sorted(set(found))
 
 
@@ -321,11 +486,19 @@ def _flatpak_scope(pkg):
     return [f"--installation={pkg.installation}"] if pkg.installation else []
 
 
-def uninstall_commands(pkg):
+def uninstall_commands(pkg, config_files=()):
     """Commands that remove the package + its system-wide config/data."""
     if pkg.source == "apt":
         return [["pkexec", "env", "DEBIAN_FRONTEND=noninteractive",
                  "apt-get", "purge", "--autoremove", "-y", pkg.name]]
+    if pkg.source == "dnf":
+        # dnf removes unused dependencies by default (clean_requirements_on_remove).
+        # RPM keeps edited config files as *.rpmsave; delete those too, like apt's purge.
+        script = "dnf remove -y -- " + shlex.quote(pkg.name)
+        if config_files:
+            script += ('\nfor f in "$@"; do if [ -e "$f.rpmsave" ]; then '
+                       'rm -f -- "$f.rpmsave" && echo "Deleted leftover config: $f.rpmsave"; fi; done')
+        return [["pkexec", "sh", "-ec", script, "uninstaller", *config_files]]
     if pkg.source == "snap":
         return [["pkexec", "snap", "remove", "--purge", pkg.name]]
     if pkg.source == "flatpak":
@@ -341,6 +514,7 @@ def uninstall_commands(pkg):
 CSS = """
 .badge { border-radius: 99px; padding: 1px 9px; font-size: 0.78em; font-weight: 700; }
 .badge-apt     { background: alpha(#e95420, 0.18); color: #e95420; }
+.badge-dnf     { background: alpha(#3c6eb4, 0.20); color: #3c6eb4; }
 .badge-snap    { background: alpha(#3fa37a, 0.20); color: #3fa37a; }
 .badge-flatpak { background: alpha(#4a90d9, 0.20); color: #4a90d9; }
 .badge-warn    { background: alpha(#e01b24, 0.18); color: #e01b24; }
@@ -433,12 +607,13 @@ class PkgRow(Gtk.Box):
 
         while (c := self.badges.get_first_child()):
             self.badges.remove(c)
-        self._badge({"apt": "APT", "snap": "Snap", "flatpak": "Flatpak"}[p.source], f"badge-{p.source}")
+        self._badge({"apt": "APT", "dnf": "DNF", "snap": "Snap", "flatpak": "Flatpak"}[p.source],
+                    f"badge-{p.source}")
         if p.system:
-            self._badge("System", "badge-warn", "Core system package — removing it can break Ubuntu")
+            self._badge("System", "badge-warn", f"Core system package — removing it can break {DISTRO_NAME}")
         if p.residual:
             self._badge("Leftover config", "badge-dim", "Already uninstalled, only config files remain")
-        elif p.source == "apt" and not p.manual:
+        elif p.source in ("apt", "dnf") and not p.manual:
             self._badge("Dependency", "badge-dim", "Installed automatically as a dependency")
         if p.source == "flatpak" and p.installation == "user":
             self._badge("User", "badge-dim")
@@ -446,6 +621,10 @@ class PkgRow(Gtk.Box):
 
 
 class Window(Adw.ApplicationWindow):
+    # dropdown labels -> source keys (native package manager first)
+    SOURCES = [None] + ([NATIVE_LABEL] if NATIVE_LABEL else []) + ["Snap", "Flatpak"]
+    SOURCE_KEYS = [None] + ([NATIVE] if NATIVE_LABEL else []) + ["snap", "flatpak"]
+
     def __init__(self, app):
         super().__init__(application=app, title="Uninstaller", icon_name=APP_ID, default_width=1000, default_height=720)
         self.busy = False
@@ -485,10 +664,10 @@ class Window(Adw.ApplicationWindow):
         # ---- filter bar
         bar = Gtk.Box(spacing=10, margin_start=14, margin_end=14, margin_top=8, margin_bottom=8)
         self.view_dd = Gtk.DropDown.new_from_strings(["Apps", "All packages"])
-        self.source_dd = Gtk.DropDown.new_from_strings(["All sources", "APT", "Snap", "Flatpak"])
+        self.source_dd = Gtk.DropDown.new_from_strings(["All sources", *self.SOURCES[1:]])
         self.sort_dd = Gtk.DropDown.new_from_strings(["Sort: Name", "Sort: Size"])
         self.manual_cb = Gtk.CheckButton(label="Hide dependencies")
-        self.manual_cb.set_tooltip_text("Hide APT packages that were installed automatically")
+        self.manual_cb.set_tooltip_text(f"Hide {NATIVE_LABEL or 'system'} packages that were installed automatically")
         for w in (self.view_dd, self.source_dd):
             w.connect("notify::selected", lambda *_: self._refilter())
         self.sort_dd.connect("notify::selected", lambda *_: self.sorter.changed(Gtk.SorterChange.DIFFERENT))
@@ -511,6 +690,9 @@ class Window(Adw.ApplicationWindow):
                                             description="Try a different search or filter"), "empty")
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        if NATIVE == "dnf" and is_ostree():
+            content.append(Adw.Banner(revealed=True, title="Fedora Atomic: the base system is managed by "
+                                      "rpm-ostree, so only Flatpaks and Snaps are listed here."))
         content.append(bar)
         content.append(Gtk.Separator())
         content.append(self.stack)
@@ -538,10 +720,10 @@ class Window(Adw.ApplicationWindow):
         p = item.pkg
         if self.view_dd.get_selected() == 0 and not p.is_app:
             return False
-        src = (None, "apt", "snap", "flatpak")[self.source_dd.get_selected()]
+        src = self.SOURCE_KEYS[self.source_dd.get_selected()]
         if src and p.source != src:
             return False
-        if self.manual_cb.get_active() and p.source == "apt" and not p.manual and not p.is_app:
+        if self.manual_cb.get_active() and p.source == NATIVE and not p.manual and not p.is_app:
             return False
         q = self.search.get_text().strip().lower()
         return all(word in item.blob for word in q.split()) if q else True
@@ -567,7 +749,7 @@ class Window(Adw.ApplicationWindow):
         Adw.AboutDialog(application_name="Uninstaller", application_icon=APP_ID, version=VERSION,
                         developer_name="cyb3rl00m", website=REPO, issue_url=REPO + "/issues",
                         license_type=Gtk.License.MIT_X11,
-                        comments="Completely remove apps and packages: APT, Snap and Flatpak, "
+                        comments="Completely remove apps and packages: APT, DNF, Snap and Flatpak, "
                                  "including the leftover files in your home folder.").present(self)
 
     def toast(self, text):
@@ -580,13 +762,31 @@ class Window(Adw.ApplicationWindow):
             return
         self.busy = True
 
+        if pkg.source == "dnf":
+            self.toast("Checking what will be removed… (dnf may ask for your password)")
+
         def work():
-            removed, err = simulate_apt_purge(pkg.name) if pkg.source == "apt" else ([pkg.name], "")
+            config = []
+            if pkg.source == "apt":
+                removed, err = simulate_apt_purge(pkg.name)
+            elif pkg.source == "dnf":
+                removed, err, cancelled = simulate_dnf_remove(pkg.name)
+                if cancelled:
+                    GLib.idle_add(self._cancelled)
+                    return
+                config = rpm_config_files(removed) if removed else []
+            else:
+                removed, err = [pkg.name], ""
             paths = user_data_paths(pkg)
-            GLib.idle_add(self._confirm, pkg, removed, err, paths)
+            GLib.idle_add(self._confirm, pkg, removed, err, paths, config)
         threading.Thread(target=work, daemon=True).start()
 
-    def _confirm(self, pkg, removed, err, paths):
+    def _cancelled(self):
+        self.busy = False
+        self.toast("Cancelled — authentication was not given")
+        return False
+
+    def _confirm(self, pkg, removed, err, paths, config=()):
         if err:
             self.busy = False
             d = Adw.AlertDialog(heading=f"Can't remove {pkg.title}", body=err)
@@ -596,14 +796,16 @@ class Window(Adw.ApplicationWindow):
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         removed_set = set(removed)
-        danger = sorted(n for n in removed_set if n.split(":")[0] in CRITICAL_META)
+        critical = FEDORA_CRITICAL | _dnf_protected() if pkg.source == "dnf" else CRITICAL_META
+        danger = sorted(n for n in removed_set if n.split(":")[0] in critical)
         if pkg.system:
             danger.insert(0, pkg.name)
 
-        if pkg.source == "apt":
+        if pkg.source in ("apt", "dnf"):
             extra = len(removed) - 1
+            verb = "purged" if pkg.source == "apt" else "removed"
             box.append(self._heading(
-                f"{len(removed)} package{'s' if len(removed) != 1 else ''} will be purged"
+                f"{len(removed)} package{'s' if len(removed) != 1 else ''} will be {verb}"
                 + (f" ({extra} unused dependenc{'ies' if extra != 1 else 'y'})" if extra > 0 else "")))
             lst = Gtk.Label(label="\n".join(sorted(removed)), xalign=0, selectable=True, wrap=True)
             lst.add_css_class("mono")
@@ -630,7 +832,7 @@ class Window(Adw.ApplicationWindow):
         if danger:
             warn = Gtk.Label(xalign=0, wrap=True, label=
                              "⚠ This touches core system packages: " + ", ".join(dict.fromkeys(danger))
-                             + ". Ubuntu may stop working properly.")
+                             + f". {DISTRO_NAME} may stop working properly.")
             warn.add_css_class("error")
             box.prepend(warn)
             ok = Gtk.CheckButton(label="I understand, remove it anyway")
@@ -644,7 +846,7 @@ class Window(Adw.ApplicationWindow):
             if resp != "go":
                 self.busy = False
                 return
-            self._run(pkg, [p for cb, p in checks if cb.get_active()])
+            self._run(pkg, [p for cb, p in checks if cb.get_active()], config)
         d.connect("response", on_response)
         d.present(self)
         return False
@@ -655,7 +857,7 @@ class Window(Adw.ApplicationWindow):
         lbl.add_css_class("heading")
         return lbl
 
-    def _run(self, pkg, trash_paths):
+    def _run(self, pkg, trash_paths, config=()):
         # progress dialog with live log
         dlg = Adw.Dialog(title=f"Removing {pkg.title}", content_width=640, content_height=420,
                          can_close=False)
@@ -698,8 +900,11 @@ class Window(Adw.ApplicationWindow):
 
         def work():
             env = dict(os.environ, LC_ALL="C")
-            for cmd in uninstall_commands(pkg):
-                log("$ " + " ".join(cmd) + "\n")
+            for cmd in uninstall_commands(pkg, config):
+                if cmd[:2] == ["pkexec", "sh"]:      # dnf: show the command, not the helper script
+                    log("$ pkexec " + cmd[3].splitlines()[0] + "\n")
+                else:
+                    log("$ " + " ".join(cmd) + "\n")
                 try:
                     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                             text=True, bufsize=1, env=env)
